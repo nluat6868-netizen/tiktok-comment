@@ -4,58 +4,63 @@ const { Server } = require('socket.io');
 const { WebcastPushConnection } = require('tiktok-live-connector');
 const path = require('path');
 const fs = require('fs');
+const mongoose = require('mongoose');
+const User = require('./models/User');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const USERS_FILE = path.join(__dirname, 'users.json');
-
-// Helper to read users
-function getUsers() {
-    try {
-        const data = fs.readFileSync(USERS_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch (err) {
-        return [];
-    }
-}
-
-// Helper to save users
-function saveUsers(users) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
+// MongoDB Connection
+const MONGO_URI = 'mongodb+srv://nluat6868_db_user:F3z4Ejbr8266Vdqy@cluster0.9vuegyb.mongodb.net/?appName=Cluster0';
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('Connected to MongoDB'))
+    .catch(err => console.error('MongoDB connection error:', err));
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 // Auth Endpoints
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
         return res.status(400).json({ message: 'Username and password required' });
     }
 
-    const users = getUsers();
-    if (users.find(u => u.username === username)) {
-        return res.status(400).json({ message: 'Username already exists' });
+    try {
+        const existingUser = await User.findOne({ username });
+        if (existingUser) {
+            return res.status(400).json({ message: 'Username already exists' });
+        }
+
+        const newUser = new User({ username, password }); // In a real app, hash the password!
+        await newUser.save();
+
+        res.json({ message: 'Registration successful' });
+    } catch (err) {
+        console.error('Registration error:', err);
+        res.status(500).json({ message: 'Internal server error' });
     }
-
-    users.push({ username, password }); // In a real app, hash the password!
-    saveUsers(users);
-
-    res.json({ message: 'Registration successful' });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
-    const users = getUsers();
-    const user = users.find(u => u.username === username && u.password === password);
 
-    if (user) {
-        res.json({ message: 'Login successful', username });
-    } else {
-        res.status(401).json({ message: 'Invalid credentials' });
+    try {
+        const user = await User.findOne({ username, password });
+
+        if (user) {
+            if (user.role === 'admin') {
+                res.json({ message: 'Login successful', username });
+            } else {
+                res.status(403).json({ message: 'Tài khoản chưa được kích hoạt. Vui lòng liên hệ admin 0899689293' });
+            }
+        } else {
+            res.status(401).json({ message: 'Invalid credentials' });
+        }
+    } catch (err) {
+        console.error('Login error:', err);
+        res.status(500).json({ message: 'Internal server error' });
     }
 });
 

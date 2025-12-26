@@ -20,6 +20,7 @@
   "homepage": "https://github.com/zerodytrash/TikTok-Chat-Reader#readme",
   "dependencies": {
     "express": "^5.2.1",
+    "mongoose": "^9.0.2",
     "socket.io": "^4.8.3",
     "tiktok-live-connector": "^2.1.1-beta1"
   }
