@@ -72,6 +72,19 @@
                     <label for="tiktok-username">TikTok Username</label>
                     <input type="text" id="tiktok-username" placeholder="@username" autocomplete="off">
                 </div>
+                <div class="input-group">
+                    <label for="session-id">Session ID (Optional)</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="session-id" placeholder="Paste sessionid cookie here" autocomplete="off"
+                            style="flex: 1;">
+                        <button id="get-session-btn" class="btn secondary" style="padding: 0 15px; white-space: nowrap;"
+                            title="Auto get from browser">
+                            <i class="fas fa-magic"></i> Get
+                        </button>
+                    </div>
+                    <small style="color: var(--text-secondary); font-size: 0.8rem;">Use this if comments are
+                        missing.</small>
+                </div>
                 <button id="connect-btn" class="btn primary">
                     <span>Connect</span>
                     <i class="fas fa-arrow-right"></i>
@@ -87,9 +100,19 @@
             <header class="dashboard-header">
                 <div class="user-info">
                     <div id="connection-status" class="status-indicator disconnected"></div>
-                    <span id="current-username">Not Connected</span>
+                    <div style="display: flex; flex-direction: column;">
+                        <span id="current-username">Not Connected</span>
+                        <span id="subscription-expiry-display"
+                            style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px;"></span>
+                    </div>
                 </div>
                 <div class="actions">
+                    <button id="admin-btn" class="icon-btn" title="Admin Panel" style="display: none;">
+                        <i class="fas fa-user-shield"></i>
+                    </button>
+                    <button id="refresh-btn" class="icon-btn" title="Refresh Connection">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
                     <button id="fullscreen-btn" class="icon-btn" title="Fullscreen Chat">
                         <i class="fas fa-expand"></i>
                     </button>
@@ -139,6 +162,39 @@
                             <span class="slider round"></span>
                         </label>
                     </div>
+                    <div class="setting-item">
+                        <span>Notification Sound</span>
+                        <select id="sound-select" class="sound-select">
+                            <!-- Options loaded by JS -->
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin Modal -->
+        <div id="admin-modal" class="modal">
+            <div class="modal-content" style="max-width: 800px;">
+                <div class="modal-header">
+                    <h2>Admin Panel</h2>
+                    <button id="close-admin" class="icon-btn"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="table-container" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; color: var(--text-color);">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--border-color); text-align: left;">
+                                    <th style="padding: 10px;">Username</th>
+                                    <th style="padding: 10px;">Role</th>
+                                    <th style="padding: 10px;">Expiry</th>
+                                    <th style="padding: 10px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="user-list-body">
+                                <!-- Users will be loaded here -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -146,6 +202,9 @@
 
     <!-- Audio Element -->
     <audio id="notification-sound" src="assets/sounds/notification.mp3" preload="auto"></audio>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="app.js"></script>

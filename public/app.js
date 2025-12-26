@@ -16,12 +16,15 @@ const logoutBtn = document.getElementById('logout-btn');
 
 // Connect Elements
 const tiktokUsernameInput = document.getElementById('tiktok-username');
+const sessionIdInput = document.getElementById('session-id');
+const getSessionBtn = document.getElementById('get-session-btn');
 const connectBtn = document.getElementById('connect-btn');
 
 // Dashboard Elements
 const disconnectBtn = document.getElementById('disconnect-btn');
 const connectionStatus = document.getElementById('connection-status');
 const currentUsername = document.getElementById('current-username');
+const subscriptionExpiryDisplay = document.getElementById('subscription-expiry-display');
 const chatFeed = document.getElementById('chat-feed');
 const chatContainer = document.getElementById('chat-container');
 const likeCount = document.getElementById('like-count');
@@ -35,6 +38,12 @@ const closeSettingsBtn = document.getElementById('close-settings');
 const soundToggleCheck = document.getElementById('sound-toggle-check');
 const soundSelect = document.getElementById('sound-select');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
+const refreshBtn = document.getElementById('refresh-btn');
+const toastContainer = document.getElementById('toast-container');
+const adminBtn = document.getElementById('admin-btn');
+const adminModal = document.getElementById('admin-modal');
+const closeAdminBtn = document.getElementById('close-admin');
+const userListBody = document.getElementById('user-list-body');
 
 // State
 let isSoundEnabled = true;
@@ -75,12 +84,38 @@ loginForm.addEventListener('submit', async (e) => {
 
         if (res.ok) {
             currentUser = data.username;
+            // Save session and username
+            localStorage.setItem('app_session_user', currentUser);
+            localStorage.setItem('remembered_login_username', username);
+
+            if (data.role === 'admin') {
+                adminBtn.style.display = 'flex';
+                // Admin doesn't need to persist tiktokUsername
+                localStorage.removeItem('tiktokUsername');
+                tiktokUsernameInput.value = '';
+            } else {
+                adminBtn.style.display = 'none';
+                if (data.tiktokUsername) {
+                    localStorage.setItem('tiktokUsername', data.tiktokUsername);
+                    tiktokUsernameInput.value = data.tiktokUsername;
+                }
+            }
+
+            if (data.subscriptionExpiry) {
+                localStorage.setItem('subscriptionExpiry', data.subscriptionExpiry);
+                updateExpiryDisplay(data.subscriptionExpiry);
+            } else {
+                localStorage.removeItem('subscriptionExpiry');
+                updateExpiryDisplay(null);
+            }
+
             showConnectScreen();
         } else {
             showError(loginMsg, data.message);
         }
     } catch (err) {
-        showError(loginMsg, 'Network error');
+        console.error('Login fetch error:', err);
+        showError(loginMsg, 'Network error: ' + err.message);
     }
 });
 
@@ -114,6 +149,8 @@ registerForm.addEventListener('submit', async (e) => {
 
 logoutBtn.addEventListener('click', () => {
     currentUser = null;
+    localStorage.removeItem('app_session_user');
+    localStorage.removeItem('subscriptionExpiry');
     showAuthScreen();
 });
 
@@ -158,21 +195,56 @@ function hideAllScreens() {
 connectBtn.addEventListener('click', connectToLive);
 disconnectBtn.addEventListener('click', disconnectFromLive);
 
+getSessionBtn.addEventListener('click', async () => {
+    getSessionBtn.disabled = true;
+    getSessionBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening...';
+
+    try {
+        const res = await fetch('/api/get-session-id');
+        const data = await res.json();
+
+        if (res.ok) {
+            sessionIdInput.value = data.sessionId;
+            localStorage.setItem('sessionId', data.sessionId);
+            showToast('Session ID retrieved successfully!', 'success');
+        } else {
+            showToast('Error: ' + data.message, 'error');
+        }
+    } catch (err) {
+        console.error('Get Session ID error:', err);
+        showToast('Failed to get Session ID', 'error');
+    } finally {
+        getSessionBtn.disabled = false;
+        getSessionBtn.innerHTML = '<i class="fas fa-magic"></i> Get';
+    }
+});
+
 tiktokUsernameInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') connectToLive();
 });
 
 function connectToLive() {
     const username = tiktokUsernameInput.value.trim();
-    if (!username) return alert('Please enter a TikTok username');
+    const sessionId = sessionIdInput.value.trim();
+    if (!username) return showToast('Please enter a TikTok username', 'error');
 
     connectBtn.disabled = true;
     connectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
 
-    socket.emit('connectToLive', username);
+    socket.emit('connectToLive', { username, sessionId });
 
     // Save username to localStorage
     localStorage.setItem('tiktokUsername', username);
+    if (sessionId) localStorage.setItem('sessionId', sessionId);
+
+    // Save to DB if logged in and NOT admin
+    if (currentUser && currentUser !== 'admin') {
+        fetch('/api/user/tiktok-username', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: currentUser, tiktokUsername: username })
+        }).catch(err => console.error('Failed to save tiktok username to DB', err));
+    }
 }
 
 function disconnectFromLive() {
@@ -205,7 +277,7 @@ socket.on('connectionStatus', (data) => {
             // Optional: show a small toast notification instead of full disconnect
         } else {
             updateStatus('disconnected');
-            alert(`Error: ${data.message}`);
+            showToast(`Error: ${data.message}`, 'error');
             connectBtn.disabled = false;
             connectBtn.innerHTML = '<span>Connect</span><i class="fas fa-arrow-right"></i>';
         }
@@ -218,7 +290,11 @@ socket.on('chat', (data) => {
 });
 
 socket.on('like', (data) => {
-    totalLikes = data.totalLikeCount;
+    if (typeof data.totalLikeCount === 'number') {
+        totalLikes = data.totalLikeCount;
+    } else {
+        totalLikes += data.likeCount;
+    }
     likeCount.textContent = formatNumber(totalLikes);
     addLike(data);
 });
@@ -227,8 +303,9 @@ socket.on('join', (data) => {
     addJoin(data);
 });
 
-socket.on('member', (data) => {
-    viewerCount.textContent = formatNumber(data.viewerCount);
+socket.on('roomUser', (data) => {
+    const count = typeof data.viewerCount === 'number' ? data.viewerCount : 0;
+    viewerCount.textContent = formatNumber(count);
 });
 
 socket.on('gift', (data) => {
@@ -263,6 +340,20 @@ soundSelect.addEventListener('change', (e) => {
     playSound(); // Preview sound
 });
 
+refreshBtn.addEventListener('click', () => {
+    refreshBtn.disabled = true;
+    const originalIcon = refreshBtn.innerHTML;
+    refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+    disconnectFromLive();
+
+    setTimeout(() => {
+        connectToLive();
+        refreshBtn.disabled = false;
+        refreshBtn.innerHTML = originalIcon;
+    }, 1000);
+});
+
 // Load Sounds
 async function loadSounds() {
     try {
@@ -291,6 +382,33 @@ if (savedUsername) {
     tiktokUsernameInput.value = savedUsername;
 }
 
+const savedSessionId = localStorage.getItem('sessionId');
+if (savedSessionId && sessionIdInput) {
+    sessionIdInput.value = savedSessionId;
+}
+
+// Load saved login username
+const savedLoginUsername = localStorage.getItem('remembered_login_username');
+if (savedLoginUsername) {
+    document.getElementById('login-username').value = savedLoginUsername;
+}
+
+// Check for active session
+const sessionUser = localStorage.getItem('app_session_user');
+if (sessionUser) {
+    console.log('Restoring session for user:', sessionUser);
+    currentUser = sessionUser;
+
+    const savedExpiry = localStorage.getItem('subscriptionExpiry');
+    if (savedExpiry) {
+        updateExpiryDisplay(savedExpiry);
+    }
+
+    showConnectScreen();
+} else {
+    console.log('No active session found');
+}
+
 // Fullscreen
 fullscreenBtn.addEventListener('click', () => {
     chatContainer.classList.toggle('fullscreen');
@@ -317,7 +435,7 @@ function addComment(data) {
     div.innerHTML = `
         <div class="chat-header">
             <img src="${avatarUrl}" alt="Avatar" class="avatar" onerror="this.src='https://via.placeholder.com/24'">
-            <span class="username">${data.uniqueId}</span>
+            <span class="username">${data.nickname || data.uniqueId}</span>
         </div>
         <div class="comment">${data.comment}</div>
     `;
@@ -328,9 +446,8 @@ function addComment(data) {
         chatFeed.removeChild(chatFeed.firstChild);
     }
 
-    if (isScrolledToBottom) {
-        chatFeed.scrollTop = chatFeed.scrollHeight;
-    }
+    // Always scroll to bottom as requested
+    chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 function addGift(data) {
@@ -342,13 +459,13 @@ function addGift(data) {
     div.innerHTML = `
         <div class="chat-header">
             <img src="${avatarUrl}" alt="Avatar" class="avatar">
-            <span class="username">${data.uniqueId}</span>
+            <span class="username">${data.nickname || data.uniqueId}</span>
         </div>
         <div class="comment">Sent ${data.giftName} x${data.repeatCount} <i class="fas fa-gift"></i></div>
     `;
 
     chatFeed.appendChild(div);
-    chatFeed.scrollTop = chatFeed.scrollHeight;
+    chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 function addLike(data) {
@@ -360,7 +477,7 @@ function addLike(data) {
     div.innerHTML = `
         <div class="chat-header">
             <img src="${avatarUrl}" alt="Avatar" class="avatar">
-            <span class="username">${data.uniqueId}</span>
+            <span class="username">${data.nickname || data.uniqueId}</span>
         </div>
         <div class="comment">Liked the LIVE <i class="fas fa-heart" style="color: #fe2c55;"></i> x${data.likeCount}</div>
     `;
@@ -368,7 +485,14 @@ function addLike(data) {
     chatFeed.appendChild(div);
 
     if (chatFeed.children.length > 200) chatFeed.removeChild(chatFeed.firstChild);
-    chatFeed.scrollTop = chatFeed.scrollHeight;
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+
+    // Remove after 3 seconds
+    setTimeout(() => {
+        if (div.parentNode) {
+            div.parentNode.removeChild(div);
+        }
+    }, 3000);
 }
 
 function addJoin(data) {
@@ -380,7 +504,7 @@ function addJoin(data) {
     div.innerHTML = `
         <div class="chat-header">
             <img src="${avatarUrl}" alt="Avatar" class="avatar">
-            <span class="username">${data.uniqueId}</span>
+            <span class="username">${data.nickname || data.uniqueId}</span>
         </div>
         <div class="comment">Joined the LIVE <i class="fas fa-sign-in-alt" style="color: #25f4ee;"></i></div>
     `;
@@ -388,7 +512,7 @@ function addJoin(data) {
     chatFeed.appendChild(div);
 
     if (chatFeed.children.length > 200) chatFeed.removeChild(chatFeed.firstChild);
-    chatFeed.scrollTop = chatFeed.scrollHeight;
+    chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
 function addSystemMessage(msg) {
@@ -400,6 +524,31 @@ function addSystemMessage(msg) {
     chatFeed.appendChild(div);
 }
 
+function updateExpiryDisplay(expiryDate) {
+    if (!subscriptionExpiryDisplay) return;
+
+    // Let's rely on the passed expiryDate. If it's null/undefined, it might be admin.
+
+    if (!expiryDate) {
+        // Check if we are admin
+        if (adminBtn && adminBtn.style.display === 'flex') {
+            subscriptionExpiryDisplay.textContent = 'Unlimited';
+            subscriptionExpiryDisplay.style.color = '#4caf50'; // Green
+        } else {
+            subscriptionExpiryDisplay.textContent = '';
+        }
+        return;
+    }
+
+    const date = new Date(expiryDate);
+    const now = new Date();
+    const isExpired = date < now;
+    const formattedDate = date.toLocaleDateString('en-GB'); // DD/MM/YYYY
+
+    subscriptionExpiryDisplay.textContent = `Expires: ${formattedDate}`;
+    subscriptionExpiryDisplay.style.color = isExpired ? '#ff4d4d' : 'var(--text-secondary)';
+}
+
 function playSound() {
     if (isSoundEnabled && notificationSound) {
         notificationSound.currentTime = 0;
@@ -408,5 +557,107 @@ function playSound() {
 }
 
 function formatNumber(num) {
-    return new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(num);
+    return new Intl.NumberFormat('en-US').format(num);
 }
+
+// Toast Notification
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast ${type} `;
+
+    let icon = 'info-circle';
+    if (type === 'success') icon = 'check-circle';
+    if (type === 'error') icon = 'exclamation-circle';
+
+    toast.innerHTML = `
+        <i class="fas fa-${icon}"></i>
+        <div class="toast-content">
+            <div class="toast-title">${type.charAt(0).toUpperCase() + type.slice(1)}</div>
+            <div class="toast-message">${message}</div>
+        </div>
+    `;
+
+    if (toastContainer) {
+        toastContainer.appendChild(toast);
+        // Remove after 3 seconds
+        setTimeout(() => {
+            toast.style.animation = 'slideOut 0.3s ease forwards';
+            setTimeout(() => {
+                toast.remove();
+            }, 300);
+        }, 3000);
+    }
+}
+
+// --- Admin Logic ---
+if (adminBtn) {
+    adminBtn.addEventListener('click', () => {
+        fetchUsers();
+        adminModal.style.display = 'flex';
+    });
+}
+
+if (closeAdminBtn) {
+    closeAdminBtn.addEventListener('click', () => {
+        adminModal.style.display = 'none';
+    });
+}
+
+async function fetchUsers() {
+    try {
+        const res = await fetch('/api/admin/users');
+        const users = await res.json();
+        renderUserList(users);
+    } catch (err) {
+        showToast('Failed to fetch users', 'error');
+    }
+}
+
+function formatDate(dateString) {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-GB'); // DD/MM/YYYY
+}
+
+function renderUserList(users) {
+    userListBody.innerHTML = '';
+    users.forEach(user => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border-color)';
+
+        const expiryDate = user.subscriptionExpiry ? formatDate(user.subscriptionExpiry) : 'Unlimited';
+        const isExpired = user.subscriptionExpiry && new Date(user.subscriptionExpiry) < new Date();
+        const expiryColor = isExpired ? '#ff4d4d' : 'var(--text-color)';
+
+        tr.innerHTML = `
+            <td style="padding: 10px;">${user.username}</td>
+            <td style="padding: 10px;">${user.role}</td>
+            <td style="padding: 10px; color: ${expiryColor};">${expiryDate}</td>
+            <td style="padding: 10px;">
+                <button class="btn secondary small" onclick="extendSubscription('${user.username}', 1)">+1M</button>
+                <button class="btn secondary small" onclick="extendSubscription('${user.username}', 3)">+3M</button>
+                <button class="btn secondary small" onclick="extendSubscription('${user.username}', 6)">+6M</button>
+            </td>
+        `;
+        userListBody.appendChild(tr);
+    });
+}
+
+window.extendSubscription = async (username, months) => {
+    try {
+        const res = await fetch('/api/admin/extend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, months })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast(`Extended ${username} by ${months} months`, 'success');
+            fetchUsers(); // Refresh list
+        } else {
+            showToast(data.message, 'error');
+        }
+    } catch (err) {
+        showToast('Error extending subscription', 'error');
+    }
+};

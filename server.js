@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const User = require('./models/User');
+const puppeteer = require('puppeteer');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,6 +14,7 @@ const io = new Server(server);
 
 // MongoDB Connection
 const MONGO_URI = 'mongodb+srv://nluat6868_db_user:F3z4Ejbr8266Vdqy@cluster0.9vuegyb.mongodb.net/?appName=Cluster0';
+
 mongoose.connect(MONGO_URI)
     .then(() => console.log('Connected to MongoDB'))
     .catch(err => console.error('MongoDB connection error:', err));
@@ -26,14 +28,15 @@ app.post('/api/register', async (req, res) => {
     if (!username || !password) {
         return res.status(400).json({ message: 'Username and password required' });
     }
-
     try {
         const existingUser = await User.findOne({ username });
         if (existingUser) {
             return res.status(400).json({ message: 'Username already exists' });
         }
 
-        const newUser = new User({ username, password }); // In a real app, hash the password!
+        const expiry = new Date();
+        expiry.setHours(expiry.getHours() + 24); // 1 Day Trial
+        const newUser = new User({ username, password, subscriptionExpiry: expiry }); // In a real app, hash the password!
         await newUser.save();
 
         res.json({ message: 'Registration successful' });
@@ -51,9 +54,14 @@ app.post('/api/login', async (req, res) => {
 
         if (user) {
             if (user.role === 'admin') {
-                res.json({ message: 'Login successful', username });
+                return res.json({ message: 'Login successful', username, role: 'admin', tiktokUsername: user.tiktokUsername });
+            }
+
+            // Check Subscription
+            if (user.subscriptionExpiry && new Date(user.subscriptionExpiry) > new Date()) {
+                res.json({ message: 'Login successful', username, role: 'user', tiktokUsername: user.tiktokUsername, subscriptionExpiry: user.subscriptionExpiry });
             } else {
-                res.status(403).json({ message: 'Tài khoản chưa được kích hoạt. Vui lòng liên hệ admin 0899689293' });
+                res.status(403).json({ message: 'Gói dịch vụ đã hết hạn. Vui lòng liên hệ admin 0899689293 để gia hạn.' });
             }
         } else {
             res.status(401).json({ message: 'Invalid credentials' });
@@ -75,19 +83,136 @@ app.get('/api/sounds', (req, res) => {
     });
 });
 
+app.post('/api/user/tiktok-username', async (req, res) => {
+    const { username, tiktokUsername } = req.body;
+    if (!username || !tiktokUsername) {
+        return res.status(400).json({ message: 'Username and TikTok username required' });
+    }
+
+    try {
+        await User.findOneAndUpdate({ username }, { tiktokUsername });
+        res.json({ message: 'TikTok username updated' });
+    } catch (err) {
+        console.error('Update error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Admin APIs
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        const users = await User.find({}, 'username role subscriptionExpiry tiktokUsername');
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({ message: 'Error fetching users' });
+    }
+});
+
+app.post('/api/admin/extend', async (req, res) => {
+    const { username, months } = req.body;
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        let currentExpiry = user.subscriptionExpiry && new Date(user.subscriptionExpiry) > new Date()
+            ? new Date(user.subscriptionExpiry)
+            : new Date();
+
+        currentExpiry.setMonth(currentExpiry.getMonth() + parseInt(months));
+
+        user.subscriptionExpiry = currentExpiry;
+        await user.save();
+
+        res.json({ message: 'Subscription extended', newExpiry: user.subscriptionExpiry });
+    } catch (err) {
+        res.status(500).json({ message: 'Error extending subscription' });
+    }
+});
+
+app.get('/api/get-session-id', async (req, res) => {
+    try {
+        const browser = await puppeteer.launch({
+            headless: false, // Show browser
+            defaultViewport: null,
+            args: ['--start-maximized']
+        });
+
+        const pages = await browser.pages();
+        const page = pages[0];
+
+        await page.goto('https://www.tiktok.com/login', { waitUntil: 'networkidle2' });
+
+        // Poll for cookie
+        const checkCookie = async () => {
+            if (browser.process() === null) return; // Browser closed
+
+            const cookies = await page.cookies();
+            const sessionCookie = cookies.find(c => c.name === 'sessionid');
+
+            if (sessionCookie) {
+                await browser.close();
+                return res.json({ sessionId: sessionCookie.value });
+            }
+
+            setTimeout(checkCookie, 1000);
+        };
+
+        checkCookie();
+
+        // Timeout after 2 minutes
+        setTimeout(async () => {
+            if (browser.process() !== null) {
+                await browser.close();
+                if (!res.headersSent) {
+                    res.status(408).json({ message: 'Login timeout' });
+                }
+            }
+        }, 120000);
+
+        // Handle browser close by user
+        browser.on('disconnected', () => {
+            if (!res.headersSent) {
+                res.status(400).json({ message: 'Browser closed by user' });
+            }
+        });
+
+    } catch (err) {
+        console.error('Puppeteer error:', err);
+        res.status(500).json({ message: 'Failed to launch browser' });
+    }
+});
+
 let tiktokConnection = null;
 
 io.on('connection', (socket) => {
     console.log('A user connected');
 
-    socket.on('connectToLive', (username) => {
+    socket.on('connectToLive', (data) => {
+        const username = typeof data === 'string' ? data : data.username;
+        const sessionId = typeof data === 'object' ? data.sessionId : null;
+
         if (tiktokConnection) {
             tiktokConnection.disconnect();
         }
 
         try {
-            tiktokConnection = new WebcastPushConnection(username);
+            const options = {
+                processInitialData: false,
+                enableExtendedGiftInfo: true,
+                enableWebsocketUpgrade: false, // Force polling to avoid 200 OK error
+                requestPollingIntervalMs: 2000,
+                clientParams: {
+                    app_language: 'en-US',
+                    device_platform: 'web'
+                }
+            };
 
+            if (sessionId) {
+                options.sessionId = sessionId;
+                console.log('Using Session ID for connection');
+            }
+
+            tiktokConnection = new WebcastPushConnection(username, options);
             tiktokConnection.connect().then(state => {
                 console.info(`Connected to roomId ${state.roomId}`);
                 socket.emit('connectionStatus', { status: 'connected', roomId: state.roomId });
@@ -112,8 +237,8 @@ io.on('connection', (socket) => {
                 socket.emit('gift', data);
             });
 
-            tiktokConnection.on('member', data => {
-                socket.emit('member', data);
+            tiktokConnection.on('roomUser', data => {
+                socket.emit('roomUser', data);
             });
 
             tiktokConnection.on('streamEnd', () => {
@@ -126,9 +251,6 @@ io.on('connection', (socket) => {
 
             tiktokConnection.on('error', (err) => {
                 console.error('TikTok connection error:', err);
-                // Don't emit 'error' status here as it disconnects the client.
-                // Just log it or send a warning toast if needed.
-                // socket.emit('connectionStatus', { status: 'error', message: err.message || 'Unknown error' });
             });
 
         } catch (error) {
@@ -155,6 +277,18 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+});
+
+// Global Error Handlers
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION! 💥 Shutting down gracefully...');
+    console.error(err.name, err.message);
+    console.error(err.stack);
+});
+
+process.on('unhandledRejection', (err) => {
+    console.error('UNHANDLED REJECTION! 💥');
+    console.error(err.name, err.message);
 });
